@@ -1,0 +1,15 @@
+18:37:26 INFO server - Game server starting
+18:37:26 INFO server - Game server running; press Ctrl-C to stop
+18:37:26 INFO panel-1 - Panel starting for player=1
+18:37:26 INFO panel-1 - Panel running; press Ctrl-C to stop
+18:37:26 INFO panel-2 - Panel starting for player=2
+18:37:26 INFO panel-2 - Panel running; press Ctrl-C to stop
+18:37:26 INFO panel-3 - Panel starting for player=3
+18:37:26 INFO panel-3 - Panel running; press Ctrl-C to stop
+18:37:26 INFO panel-4 - Panel starting for player=4
+18:37:26 INFO panel-4 - Panel running; press Ctrl-C to stop
+18:37:30 INFO panel-3 - Panel shutting down
+18:37:30 INFO panel-1 - Panel shutting down
+18:37:30 INFO panel-4 - Panel shutting down
+18:37:30 INFO panel-2 - Panel shutting down
+18:37:30 INFO server - Game server shutting down
