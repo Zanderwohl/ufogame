@@ -5,6 +5,7 @@ import json
 from zeroconf import Zeroconf, IPVersion
 
 from common.panel import Panel, panel_to_json
+from common.packets import Packet, TextPacket, decode_lines
 from common.runner import run
 
 SOCKET: socket.socket | None = None
@@ -24,7 +25,7 @@ def main(player: int | None):
         run_frame=run_frame,
     )
 
-def run_frame(logger: logging.Logger) -> bool:
+def attempt_connection(logger: logging.Logger) -> bool:
     global SOCKET, PANEL
     if SOCKET is None:
         try:
@@ -37,7 +38,7 @@ def run_frame(logger: logging.Logger) -> bool:
                 zc.close()
             if not info or not info.addresses:
                 logger.debug("No ufogame-0 service found via mDNS")
-                return True
+                return False
             ip_bytes = info.addresses[0]
             ip_str = socket.inet_ntoa(ip_bytes)
             port = info.port
@@ -54,7 +55,7 @@ def run_frame(logger: logging.Logger) -> bool:
                 except Exception:
                     pass
                 logger.debug(f"Failed sending handshake: {e}")
-                return True
+                return False
             s.setblocking(False)
             SOCKET = s
             logger.info(f"Connected to server at {ip_str}:{port}")
@@ -66,32 +67,54 @@ def run_frame(logger: logging.Logger) -> bool:
                     pass
                 SOCKET = None
             logger.debug(f"Connect attempt failed: {e}")
+            return False
+        return True
+
+_RX_BUFFER: bytes = b""
+
+
+def receive_packets(logger: logging.Logger) -> list[Packet]:
+    global SOCKET, _RX_BUFFER
+    packets: list[Packet] = []
+    if SOCKET is None:
+        return packets
+    try:
+        while True:
+            try:
+                data = SOCKET.recv(4096)
+            except BlockingIOError:
+                break
+            if not data:
+                try:
+                    SOCKET.close()
+                except Exception:
+                    pass
+                SOCKET = None
+                logger.info("Server closed connection; will retry")
+                break
+            _RX_BUFFER += data
+            decoded, remainder = decode_lines(_RX_BUFFER)
+            _RX_BUFFER = remainder
+            packets.extend(decoded)
+    except Exception as e:
+        try:
+            SOCKET.close()
+        except Exception:
+            pass
+        SOCKET = None
+        logger.debug(f"Socket error; resetting: {e}")
+    return packets
+
+
+def run_frame(logger: logging.Logger) -> bool:
+    global SOCKET
+
+    if SOCKET is None:
+        if not attempt_connection(logger):
             return True
 
-    if SOCKET is not None:
-        try:
-            while True:
-                try:
-                    data = SOCKET.recv(4096)
-                except BlockingIOError:
-                    break
-                if not data:
-                    try:
-                        SOCKET.close()
-                    except Exception:
-                        pass
-                    SOCKET = None
-                    logger.info("Server closed connection; will retry")
-                    return True
-                text = data.decode(errors="replace")
-                for line in text.splitlines():
-                    logger.info(f"recv: {line}")
-        except Exception as e:
-            try:
-                SOCKET.close()
-            except Exception:
-                pass
-            SOCKET = None
-            logger.debug(f"Socket error; resetting: {e}")
-            return True
+    packets = receive_packets(logger)
+    for p in packets:
+        if isinstance(p, TextPacket):
+            logger.info(f"recv: {p.text}")
     return True

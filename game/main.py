@@ -3,9 +3,10 @@ import time
 import logging
 import socket
 import json
-from typing import Dict
+from typing import Dict, List
 from common.runner import run
 from common.panel import Panel, panel_from_json
+from common.packets import Packet, TextPacket, decode_lines, encode_packet
 
 
 class Client:
@@ -17,6 +18,7 @@ PORT = 8200
 _server_sock: socket.socket | None = None
 _clients: Dict[int, Client] = {}
 _last_sent: float = 0.0
+_rx_buffers: Dict[int, bytes] = {}
 
 def main():
     return run(
@@ -28,111 +30,145 @@ def main():
     )
 
 def run_frame(logger: logging.Logger) -> bool:
-    global _server_sock, _clients, _last_sent
     try:
-        if _server_sock is None:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind(("0.0.0.0", PORT))
-            s.listen(16)
-            s.setblocking(False)
-            _server_sock = s
-            logger.info(f"Server listening on 0.0.0.0:{PORT}")
+        ensure_server_ready(logger)
+        accept_new_clients(logger)
+        packets_by_player = receive_packets(logger)
 
-        # Accept any pending connections
-        while True:
-            try:
-                c, addr = _server_sock.accept()
-            except BlockingIOError:
-                break
-            # Read one JSON line handshake with blocking timeout
-            c.settimeout(1.0)
-            data = b""
-            try:
-                while not data.endswith(b"\n") and len(data) < 65536:
-                    chunk = c.recv(4096)
-                    if not chunk:
-                        break
-                    data += chunk
-            finally:
-                c.settimeout(0.0)
-            panel_obj: Panel | None = None
-            player_id: int | None = None
-            try:
-                obj = json.loads(data.decode("utf-8")) if data else {}
-                if isinstance(obj, dict) and obj.get("player") is not None:
-                    panel_obj = panel_from_json(obj)
-                    player_id = panel_obj.player
-            except Exception:
-                panel_obj = None
-                player_id = None
-            if not player_id or not (1 <= player_id <= 9) or panel_obj is None:
-                try:
-                    c.close()
-                except Exception:
-                    pass
-                logger.debug(f"Rejected connection {addr}: missing/invalid player id")
-            else:
-                # Replace any existing client for this player
-                old = _clients.pop(player_id, None)
-                if old is not None:
-                    try:
-                        old.sock.close()
-                    except Exception:
-                        pass
-                    logger.info(f"Player {player_id} replaced existing connection")
-                c.setblocking(False)
-                _clients[player_id] = Client(panel=panel_obj, sock=c)
-                logger.info(f"Player {player_id} connected from {addr}")
-                logger.info(f"Player {player_id} capabilities: {panel_obj.capabilities}")
+        # Game loop work sees only high-level packets
+        for pid, packets in packets_by_player.items():
+            for p in packets:
+                if isinstance(p, TextPacket):
+                    logger.info(f"recv from {pid}: {p.text}")
 
-        # Read from clients and remove disconnected
-        gone: list[int] = []
-        for pid, client in _clients.items():
-            c = client.sock
-            try:
-                data = c.recv(1)
-                if data == b"":
-                    try:
-                        c.close()
-                    except Exception:
-                        pass
-                    logger.info(f"Player {pid} disconnected")
-                    gone.append(pid)
-                elif data:
-                    # Drain rest quickly
-                    try:
-                        rest = c.recv(4096)
-                        data += rest
-                    except BlockingIOError:
-                        pass
-                    logger.info(f"from player {pid}: {data!r}")
-            except BlockingIOError:
-                pass
-            except Exception as e:
-                try:
-                    c.close()
-                except Exception:
-                    pass
-                logger.debug(f"Player {pid} error; dropping: {e}")
-                gone.append(pid)
-        for pid in gone:
-            _clients.pop(pid, None)
-
-        now = time.monotonic()
-        if now - _last_sent >= 1.0:
-            _last_sent = now
-            msg = b"Hello from server\n"
-            for pid, client in list(_clients.items()):
-                try:
-                    client.sock.sendall(msg)
-                except Exception:
-                    try:
-                        client.sock.close()
-                    except Exception:
-                        pass
-                    _clients.pop(pid, None)
+        send_heartbeat_if_due()
         return True
     except Exception as e:
         logger.debug(f"Server frame error: {e}")
         return True
+
+
+def ensure_server_ready(logger: logging.Logger) -> None:
+    global _server_sock
+    if _server_sock is not None:
+        return
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("0.0.0.0", PORT))
+    s.listen(16)
+    s.setblocking(False)
+    _server_sock = s
+    logger.info(f"Server listening on 0.0.0.0:{PORT}")
+
+
+def accept_new_clients(logger: logging.Logger) -> None:
+    global _clients, _rx_buffers
+    if _server_sock is None:
+        return
+    # Bounded accepts per frame to avoid long frames
+    for _ in range(32):
+        try:
+            c, addr = _server_sock.accept()
+        except BlockingIOError:
+            break
+
+        # Read one JSON line handshake with blocking timeout
+        c.settimeout(1.0)
+        data = b""
+        try:
+            while not data.endswith(b"\n") and len(data) < 65536:
+                chunk = c.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            c.settimeout(0.0)
+
+        panel_obj: Panel | None = None
+        player_id: int | None = None
+        try:
+            obj = json.loads(data.decode("utf-8")) if data else {}
+            if isinstance(obj, dict) and obj.get("player") is not None:
+                panel_obj = panel_from_json(obj)
+                player_id = panel_obj.player
+        except Exception:
+            panel_obj = None
+            player_id = None
+
+        if not player_id or not (1 <= player_id <= 9) or panel_obj is None:
+            try:
+                c.close()
+            except Exception:
+                pass
+            logger.debug(f"Rejected connection {addr}: missing/invalid player id")
+            continue
+
+        # Replace any existing client for this player
+        old = _clients.pop(player_id, None)
+        if old is not None:
+            try:
+                old.sock.close()
+            except Exception:
+                pass
+            logger.info(f"Player {player_id} replaced existing connection")
+
+        c.setblocking(False)
+        _clients[player_id] = Client(panel=panel_obj, sock=c)
+        _rx_buffers[player_id] = b""
+        logger.info(f"Player {player_id} connected from {addr}")
+        logger.info(f"Player {player_id} capabilities: {panel_obj.capabilities}")
+
+
+def receive_packets(logger: logging.Logger) -> Dict[int, List[Packet]]:
+    global _clients, _rx_buffers
+    packets_by_player: Dict[int, List[Packet]] = {}
+    gone: list[int] = []
+    for pid, client in _clients.items():
+        c = client.sock
+        try:
+            data = c.recv(4096)
+            if data == b"":
+                try:
+                    c.close()
+                except Exception:
+                    pass
+                logger.info(f"Player {pid} disconnected")
+                gone.append(pid)
+                continue
+            elif data:
+                buf = _rx_buffers.get(pid, b"") + data
+                decoded, remainder = decode_lines(buf)
+                _rx_buffers[pid] = remainder
+                if decoded:
+                    packets_by_player[pid] = decoded
+        except BlockingIOError:
+            pass
+        except Exception as e:
+            try:
+                c.close()
+            except Exception:
+                pass
+            logger.debug(f"Player {pid} error; dropping: {e}")
+            gone.append(pid)
+    for pid in gone:
+        _clients.pop(pid, None)
+        _rx_buffers.pop(pid, None)
+    return packets_by_player
+
+
+def send_heartbeat_if_due() -> None:
+    global _last_sent
+    now = time.monotonic()
+    if now - _last_sent < 1.0:
+        return
+    _last_sent = now
+    msg = encode_packet(TextPacket("Hello from server"))
+    for pid, client in list(_clients.items()):
+        try:
+            client.sock.sendall(msg)
+        except Exception:
+            try:
+                client.sock.close()
+            except Exception:
+                pass
+            _clients.pop(pid, None)
