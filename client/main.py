@@ -4,13 +4,14 @@ import json
 
 from zeroconf import Zeroconf, IPVersion
 
-from common.gamestate import GameStatePacket
+from common.gamestate import GameStatePacket, GameState, ClientState
 from common.panel import Panel, panel_to_json
-from common.packets import Packet, TextPacket, decode_lines
+from common.packets import Packet, TextPacket, decode_lines, encode_packet
 from common.runner import run
 
 SOCKET: socket.socket | None = None
 PANEL: Panel | None = None
+_RX_BUFFER: bytes = b""
 
 def main(player: int | None):
     global PANEL
@@ -19,18 +20,36 @@ def main(player: int | None):
         return 1
     PANEL = Panel(player)
     return run(
-        logger_name=f"panel-{player}",
+        logger_name=f"client-{player}",
         advertise_instance=f"ufogame-{player}",
         advertise_port=8200 + player,
         advertise_properties={"player": str(player)},
         run_frame=run_frame,
     )
 
+def run_frame(logger: logging.Logger) -> bool:
+    global SOCKET
+
+    if SOCKET is None:
+        if not attempt_connection(logger):
+            return True
+
+    packets = receive_packets(logger)
+    for p in packets:
+        if isinstance(p, TextPacket):
+            logger.info(f"recv: {p.text}")
+        if isinstance(p, GameStatePacket):
+            logger.info(f"recv: {p.packet}")
+            if p.packet == GameState.IDLE:
+                send_packet(ClientState(ready=True))
+    return True
+
+
 def attempt_connection(logger: logging.Logger) -> bool:
     global SOCKET, PANEL
     if SOCKET is None:
         try:
-            service_type = "_ufogame._tcp.local."
+            service_type = "_ufogame-0._tcp.local."
             instance_name = f"ufogame-0.{service_type}"
             zc = Zeroconf(ip_version=IPVersion.All)
             try:
@@ -71,7 +90,7 @@ def attempt_connection(logger: logging.Logger) -> bool:
             return False
         return True
 
-_RX_BUFFER: bytes = b""
+
 
 
 def receive_packets(logger: logging.Logger) -> list[Packet]:
@@ -107,17 +126,18 @@ def receive_packets(logger: logging.Logger) -> list[Packet]:
     return packets
 
 
-def run_frame(logger: logging.Logger) -> bool:
+def send_packet(packet: Packet) -> bool:
     global SOCKET
-
     if SOCKET is None:
-        if not attempt_connection(logger):
-            return True
-
-    packets = receive_packets(logger)
-    for p in packets:
-        if isinstance(p, TextPacket):
-            logger.info(f"recv: {p.text}")
-        if isinstance(p, GameStatePacket):
-            logger.info(f"recv: {p.packet}")
-    return True
+        return False
+    try:
+        data = encode_packet(packet)
+        SOCKET.sendall(data)
+        return True
+    except Exception:
+        try:
+            SOCKET.close()
+        except Exception:
+            pass
+        SOCKET = None
+        return False

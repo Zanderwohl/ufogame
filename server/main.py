@@ -5,7 +5,7 @@ import socket
 import json
 from typing import Dict, List
 
-from common.gamestate import GameStatePacket, GameState
+from common.gamestate import GameStatePacket, GameState, ClientState
 from common.runner import run
 from common.panel import Panel, panel_from_json
 from common.packets import Packet, TextPacket, decode_lines, encode_packet
@@ -39,14 +39,18 @@ def run_frame(logger: logging.Logger) -> bool:
         ensure_server_ready(logger)
         new_client_ids = accept_new_clients(logger)
         for client_id in new_client_ids:
-            send_packet_to_player(client_id, GameStatePacket(_game_state))
+            send_packet_to_player(client_id, GameStatePacket(state=_game_state))
 
         packets_by_player = receive_packets(logger)
         for pid, packets in packets_by_player.items():
             for p in packets:
                 if isinstance(p, TextPacket):
                     logger.info(f"recv from {pid}: {p.text}")
-
+                if isinstance(p, ClientState):
+                    if p.ready:
+                        logger.info(f"Panel {pid} is ready")
+                    else:
+                        logger.info(f"Panel {pid} is not ready")
         # send_heartbeat_if_due()
         return True
     except Exception as e:
@@ -90,8 +94,16 @@ def accept_new_clients(logger: logging.Logger) -> list[int]:
                 if not chunk:
                     break
                 data += chunk
+        except Exception as e:
+            try:
+                c.close()
+            except Exception:
+                pass
+            logger.info(f"Handshake read failed from {addr}: {e}")
+            continue
         finally:
-            c.settimeout(0.0)
+            # Return to blocking mode for initial write; we'll switch to nonblocking later
+            c.settimeout(None)
 
         panel_obj: Panel | None = None
         player_id: int | None = None
@@ -109,7 +121,8 @@ def accept_new_clients(logger: logging.Logger) -> list[int]:
                 c.close()
             except Exception:
                 pass
-            logger.debug(f"Rejected connection {addr}: missing/invalid player id")
+            preview = data[:200].decode("utf-8", errors="replace") if data else ""
+            logger.info(f"Rejected connection {addr}: invalid handshake; data preview='{preview}'")
             continue
 
         # Replace any existing client for this player
@@ -121,8 +134,17 @@ def accept_new_clients(logger: logging.Logger) -> list[int]:
                 pass
             logger.info(f"Player {player_id} replaced existing connection")
 
+        # Send initial RESET in blocking mode to avoid EAGAIN on nonblocking send
+        try:
+            c.sendall(encode_packet(GameStatePacket(state=GameState.RESET)))
+        except Exception as e:
+            try:
+                c.close()
+            except Exception:
+                pass
+            logger.info(f"Failed to send initial RESET to player {player_id}; dropping: {e}")
+            continue
         c.setblocking(False)
-        c.sendall(encode_packet(GameStatePacket(GameState.RESET)))
         _clients[player_id] = Client(panel=panel_obj, sock=c)
         new_clients.append(player_id)
         _rx_buffers[player_id] = b""
@@ -174,7 +196,7 @@ def send_heartbeat_if_due() -> None:
     if now - _last_sent < 1.0:
         return
     _last_sent = now
-    msg = encode_packet(TextPacket("Hello from server"))
+    msg = encode_packet(TextPacket(text="Hello from server"))
     for pid, client in list(_clients.items()):
         try:
             client.sock.sendall(msg)

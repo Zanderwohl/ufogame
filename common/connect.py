@@ -14,7 +14,15 @@ def start_mdns_advertiser(instance: str, port: int, properties: Optional[dict] =
 def _advertise_mdns(instance: str, port: int, properties: dict, stop_event: Event) -> None:
     zeroconf = Zeroconf(ip_version=IPVersion.All)
     asc = socket.gethostname()
+    # Derive service type as _ufogame-{n}._tcp.local. when instance matches ufogame-{n}
     type_ = "_ufogame._tcp.local."
+    try:
+        if instance.startswith("ufogame-"):
+            suffix = instance.split("-", 1)[1]
+            if suffix.isdigit():
+                type_ = f"_ufogame-{suffix}._tcp.local."
+    except Exception:
+        pass
     name = f"{instance}.{type_}"
     ip = _get_local_ip()
     info = ServiceInfo(
@@ -27,7 +35,8 @@ def _advertise_mdns(instance: str, port: int, properties: dict, stop_event: Even
         properties={"host": asc, **properties},
         server=f"{instance}.local.",
     )
-    zeroconf.register_service(info)
+    # Allow zeroconf to auto-rename to avoid NonUniqueNameException when a duplicate exists
+    zeroconf.register_service(info, allow_name_change=True)
     try:
         stop_event.wait()
     finally:

@@ -3,29 +3,36 @@ import argparse
 import subprocess
 import signal
 import time
-from game.main import main as game_main
-from panel.main import main as panel_main
+
+from common import get_logger
+from server.main import main as server_main
+from client.main import main as client_main
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="ufogame", description="Run game or panel")
+    logger = get_logger('startup')
+
+    parser = argparse.ArgumentParser(prog="ufogame", description="Run server or client")
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("-g", "--game", action="store_true", help="Run the game")
-    group.add_argument("-p", "--panel", action="store_true", help="Run the panel")
+    group.add_argument("-s", "--server", action="store_true", help="Run the server")
+    group.add_argument("-c", "--client", action="store_true", help="Run the client")
     group.add_argument("-t", "--test", action="store_true", help="Run server + 4 panels on one machine")
-    parser.add_argument("--player", type=int, default=None, help="Which player the panel controls (1-9)")
+    parser.add_argument("--player", type=int, default=None, help="Which player the client controls (1-9)")
     args = parser.parse_args(argv)
 
-    if args.game:
-        game_main()
-    elif args.panel:
+    if args.server:
+        return server_main()
+    elif args.client:
         player = args.player
         if player is None or player < 1 or player > 9:
-            print("--player must be an integer between 1 and 9")
+            logger.error("--player must be an integer between 1 and 9")
             return 2
-        panel_main(player)
+        return client_main(player)
     elif args.test:
         return _run_test_mode()
+    else:
+        logger.error("Must specify either --server or --client")
+        return 0
 
 def _run_test_mode() -> int:
     procs = []
