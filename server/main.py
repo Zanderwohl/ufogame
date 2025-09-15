@@ -5,10 +5,11 @@ import socket
 from typing import Dict
 
 from common.gamestate import GameStatePacket, GameState, ClientState, StartLevelPacket
+from common.names import generate_names
 from common.runner import run
 from common.packets import TextPacket
 from server.network import Client, ensure_server_ready, accept_new_clients, receive_packets, send_packet_to_player, \
-    send_packet_to_all, PORT, all_clients_ready as net_all_clients_ready, set_client_ready, client_count
+    send_packet_to_all, PORT, all_clients_ready as net_all_clients_ready, set_client_ready, client_count, clients
 
 COUNTDOWN_LENGTH = 3
 _game_state: GameState = GameState.IDLE
@@ -69,8 +70,20 @@ def run_frame(logger: logging.Logger) -> bool:
                     _level += 1
                     _countdown = None
                     send_packet_to_all(GameStatePacket(state=GameState.IN_LEVEL))
-                    # Start the level; provide doodad names if available
-                    send_packet_to_all(StartLevelPacket(doodad_names={}, level=_level))
+                    # Start the level; provide doodad names
+
+                    doodad_count = 0
+                    for client in clients.values():
+                        doodad_count += len(client.panel.capabilities)
+                    doodad_names = generate_names(doodad_count)
+
+                    n = 0
+                    for pid, client in clients.items():
+                        doodads = {}
+                        for doodad in client.panel.capabilities:
+                            doodads[doodad.id] = doodad_names[n]
+                            n += 1
+                        send_packet_to_player(pid, StartLevelPacket(doodad_names=doodads, level=_level))
 
         return True
     except Exception as e:

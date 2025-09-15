@@ -10,6 +10,7 @@ class Doodad:
         self.id = ident
         self.player = player
         self.kind = kind
+        self.name = ""
 
     def __str__(self):
         return "Doodad({}, {})".format(self.id, self.kind)

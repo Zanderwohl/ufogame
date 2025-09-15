@@ -7,8 +7,8 @@ class Panel:
         self.player: int = player
         self.capabilities: List[Doodad] = [
             Doodad("2312", player, DoodadKind.SingleButton),
-            Doodad("2312", player, DoodadKind.MultiButton),
-            Doodad("2312", player, DoodadKind.Slider),
+            Doodad("F3DC", player, DoodadKind.MultiButton),
+            Doodad("0D50", player, DoodadKind.Slider),
         ]
 
 

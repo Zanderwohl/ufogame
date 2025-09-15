@@ -9,12 +9,15 @@ from common.packets import TextPacket
 from common.runner import run
 
 _state = GameState.IDLE
+_panel = None
 
 def main(player: int | None):
+    global _panel
     if player is None:
         print("No player specified")
         return 1
-    client.network.PANEL = Panel(player)
+    _panel = Panel(player)
+    client.network.PANEL = _panel
     return run(
         logger_name=f"client-{player}",
         advertise_instance=f"ufogame-{player}",
@@ -24,7 +27,7 @@ def main(player: int | None):
     )
 
 def run_frame(logger: logging.Logger) -> bool:
-    global _state
+    global _state, _panel
     if client.network.SOCKET is None:
         if not attempt_connection(logger):
             return True
@@ -48,5 +51,5 @@ def run_frame(logger: logging.Logger) -> bool:
                 # Potentially update UI with p.level
                 pass
         if isinstance(p, StartLevelPacket):
-            logger.info(f"Starting level {p.level}")
+            logger.info(f"Starting level {p.level}, doodads: {p.doodad_names}")
     return True

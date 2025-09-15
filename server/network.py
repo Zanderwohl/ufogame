@@ -17,7 +17,7 @@ class Client:
 
 PORT = 8200
 _server_sock: socket.socket | None = None
-_clients: Dict[int, Client] = {}
+clients: Dict[int, Client] = {}
 _last_sent: float = 0.0
 _rx_buffers: Dict[int, bytes] = {}
 
@@ -35,7 +35,7 @@ def ensure_server_ready(logger: logging.Logger) -> None:
 
 
 def accept_new_clients(logger: logging.Logger) -> list[int]:
-    global _clients, _rx_buffers
+    global clients, _rx_buffers
     if _server_sock is None:
         return []
 
@@ -89,7 +89,7 @@ def accept_new_clients(logger: logging.Logger) -> list[int]:
             continue
 
         # Replace any existing client for this player
-        old = _clients.pop(player_id, None)
+        old = clients.pop(player_id, None)
         if old is not None:
             try:
                 old.sock.close()
@@ -108,7 +108,7 @@ def accept_new_clients(logger: logging.Logger) -> list[int]:
             logger.info(f"Failed to send initial RESET to player {player_id}; dropping: {e}")
             continue
         c.setblocking(False)
-        _clients[player_id] = Client(panel=panel_obj, sock=c)
+        clients[player_id] = Client(panel=panel_obj, sock=c)
         new_clients.append(player_id)
         _rx_buffers[player_id] = b""
         logger.info(f"Player {player_id} connected from {addr}")
@@ -117,10 +117,10 @@ def accept_new_clients(logger: logging.Logger) -> list[int]:
 
 
 def receive_packets(logger: logging.Logger) -> Dict[int, List[Packet]]:
-    global _clients, _rx_buffers
+    global clients, _rx_buffers
     packets_by_player: Dict[int, List[Packet]] = {}
     gone: list[int] = []
-    for pid, client in _clients.items():
+    for pid, client in clients.items():
         c = client.sock
         try:
             data = c.recv(4096)
@@ -148,7 +148,7 @@ def receive_packets(logger: logging.Logger) -> Dict[int, List[Packet]]:
             logger.debug(f"Player {pid} error; dropping: {e}")
             gone.append(pid)
     for pid in gone:
-        _clients.pop(pid, None)
+        clients.pop(pid, None)
         _rx_buffers.pop(pid, None)
     return packets_by_player
 
@@ -160,7 +160,7 @@ def send_heartbeat_if_due() -> None:
         return
     _last_sent = now
     msg = encode_packet(TextPacket(text="Hello from server"))
-    for pid, client in list(_clients.items()):
+    for pid, client in list(clients.items()):
         try:
             client.sock.sendall(msg)
         except Exception:
@@ -168,11 +168,11 @@ def send_heartbeat_if_due() -> None:
                 client.sock.close()
             except Exception:
                 pass
-            _clients.pop(pid, None)
+            clients.pop(pid, None)
 
 
 def send_packet_to_player(player_id: int, packet: Packet) -> bool:
-    client = _clients.get(player_id)
+    client = clients.get(player_id)
     if client is None:
         return False
     try:
@@ -184,14 +184,14 @@ def send_packet_to_player(player_id: int, packet: Packet) -> bool:
             client.sock.close()
         except Exception:
             pass
-        _clients.pop(player_id, None)
+        clients.pop(player_id, None)
         return False
 
 
 def send_packet_to_all(packet: Packet) -> int:
     data = encode_packet(packet)
     delivered = 0
-    for pid, client in list(_clients.items()):
+    for pid, client in list(clients.items()):
         try:
             client.sock.sendall(data)
             delivered += 1
@@ -200,21 +200,21 @@ def send_packet_to_all(packet: Packet) -> int:
                 client.sock.close()
             except Exception:
                 pass
-            _clients.pop(pid, None)
+            clients.pop(pid, None)
     return delivered
 
 
 def set_client_ready(player_id: int, ready: bool) -> None:
-    client = _clients.get(player_id)
+    client = clients.get(player_id)
     if client is not None:
         client.ready = ready
 
 
 def all_clients_ready() -> bool:
-    if len(_clients) == 0:
+    if len(clients) == 0:
         return False
-    return all(client.ready for client in _clients.values())
+    return all(client.ready for client in clients.values())
 
 
 def client_count() -> int:
-    return len(_clients)
+    return len(clients)
