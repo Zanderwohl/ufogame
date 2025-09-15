@@ -4,6 +4,8 @@ import logging
 import socket
 import json
 from typing import Dict, List
+
+from common.gamestate import GameStatePacket, GameState
 from common.runner import run
 from common.panel import Panel, panel_from_json
 from common.packets import Packet, TextPacket, decode_lines, encode_packet
@@ -41,7 +43,7 @@ def run_frame(logger: logging.Logger) -> bool:
                 if isinstance(p, TextPacket):
                     logger.info(f"recv from {pid}: {p.text}")
 
-        send_heartbeat_if_due()
+        # send_heartbeat_if_due()
         return True
     except Exception as e:
         logger.debug(f"Server frame error: {e}")
@@ -113,6 +115,7 @@ def accept_new_clients(logger: logging.Logger) -> None:
             logger.info(f"Player {player_id} replaced existing connection")
 
         c.setblocking(False)
+        c.sendall(encode_packet(GameStatePacket(GameState.IDLE)))
         _clients[player_id] = Client(panel=panel_obj, sock=c)
         _rx_buffers[player_id] = b""
         logger.info(f"Player {player_id} connected from {addr}")

@@ -4,6 +4,7 @@ import json
 
 from zeroconf import Zeroconf, IPVersion
 
+from common.gamestate import GameStatePacket
 from common.panel import Panel, panel_to_json
 from common.packets import Packet, TextPacket, decode_lines
 from common.runner import run
@@ -117,4 +118,6 @@ def run_frame(logger: logging.Logger) -> bool:
     for p in packets:
         if isinstance(p, TextPacket):
             logger.info(f"recv: {p.text}")
+        if isinstance(p, GameStatePacket):
+            logger.info(f"recv: {p.packet}")
     return True
