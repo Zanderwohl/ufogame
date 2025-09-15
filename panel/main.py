@@ -1,15 +1,21 @@
-import time
 import logging
 import socket
+import json
+
 from zeroconf import Zeroconf, IPVersion
+
+from common.panel import Panel
 from common.runner import run
 
 SOCKET: socket.socket | None = None
+PANEL: Panel | None = None
 
 def main(player: int | None):
+    global PANEL
     if player is None:
         print("No player specified")
         return 1
+    PANEL = Panel(player)
     return run(
         logger_name=f"panel-{player}",
         advertise_instance=f"ufogame-{player}",
@@ -19,7 +25,7 @@ def main(player: int | None):
     )
 
 def run_frame(logger: logging.Logger) -> bool:
-    global SOCKET
+    global SOCKET, PANEL
     if SOCKET is None:
         try:
             service_type = "_ufogame._tcp.local."
@@ -38,6 +44,20 @@ def run_frame(logger: logging.Logger) -> bool:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(0.75)
             s.connect((ip_str, port))
+            # Send PANEL handshake as JSON line before switching to nonblocking
+            try:
+                payload = json.dumps({
+                    "player": PANEL.player if PANEL else None,
+                    "capabilities": PANEL.capabilities if PANEL else [],
+                }) + "\n"
+                s.sendall(payload.encode("utf-8"))
+            except Exception as e:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+                logger.debug(f"Failed sending handshake: {e}")
+                return True
             s.setblocking(False)
             SOCKET = s
             logger.info(f"Connected to server at {ip_str}:{port}")
