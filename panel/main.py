@@ -1,34 +1,80 @@
-from threading import Event
-import signal
 import time
-from common.connect import start_mdns_advertiser
-from common.logger import get_logger
+import logging
+import socket
+from zeroconf import Zeroconf, IPVersion
+from common.runner import run
 
+SOCKET: socket.socket | None = None
 
 def main(player: int | None):
     if player is None:
         print("No player specified")
         return 1
-    logger = get_logger(f"panel-{player}")
-    logger.info(f"Panel starting for player={player}")
+    return run(
+        logger_name=f"panel-{player}",
+        advertise_instance=f"ufogame-{player}",
+        advertise_port=8200 + player,
+        advertise_properties={"player": str(player)},
+        run_frame=run_frame,
+    )
 
-    # Start mDNS advertisement in background
-    stop_event = start_mdns_advertiser(f"ufogame-{player}", 8200 + player, {"player": str(player)})
+def run_frame(logger: logging.Logger) -> bool:
+    global SOCKET
+    if SOCKET is None:
+        try:
+            service_type = "_ufogame._tcp.local."
+            instance_name = f"ufogame-0.{service_type}"
+            zc = Zeroconf(ip_version=IPVersion.All)
+            try:
+                info = zc.get_service_info(service_type, instance_name, timeout=1000)
+            finally:
+                zc.close()
+            if not info or not info.addresses:
+                logger.debug("No ufogame-0 service found via mDNS")
+                return True
+            ip_bytes = info.addresses[0]
+            ip_str = socket.inet_ntoa(ip_bytes)
+            port = info.port
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(0.75)
+            s.connect((ip_str, port))
+            s.setblocking(False)
+            SOCKET = s
+            logger.info(f"Connected to server at {ip_str}:{port}")
+        except Exception as e:
+            if SOCKET is not None:
+                try:
+                    SOCKET.close()
+                except Exception:
+                    pass
+                SOCKET = None
+            logger.debug(f"Connect attempt failed: {e}")
+            return True
 
-    # Block until Ctrl-C
-    shutdown = Event()
-
-    def _handle_sigint(signum, frame):
-        shutdown.set()
-
-    signal.signal(signal.SIGINT, _handle_sigint)
-    logger.info("Panel running; press Ctrl-C to stop")
-    try:
-        while not shutdown.is_set():
-            time.sleep(0.2)
-    finally:
-        logger.info("Panel shutting down")
-        stop_event.set()
-    return 0
-
-    
+    if SOCKET is not None:
+        try:
+            while True:
+                try:
+                    data = SOCKET.recv(4096)
+                except BlockingIOError:
+                    break
+                if not data:
+                    try:
+                        SOCKET.close()
+                    except Exception:
+                        pass
+                    SOCKET = None
+                    logger.info("Server closed connection; will retry")
+                    return True
+                text = data.decode(errors="replace")
+                for line in text.splitlines():
+                    logger.info(f"recv: {line}")
+        except Exception as e:
+            try:
+                SOCKET.close()
+            except Exception:
+                pass
+            SOCKET = None
+            logger.debug(f"Socket error; resetting: {e}")
+            return True
+    return True
