@@ -4,7 +4,7 @@ import json
 
 from zeroconf import Zeroconf, IPVersion
 
-from common.panel import Panel
+from common.panel import Panel, panel_to_json
 from common.runner import run
 
 SOCKET: socket.socket | None = None
@@ -46,10 +46,7 @@ def run_frame(logger: logging.Logger) -> bool:
             s.connect((ip_str, port))
             # Send PANEL handshake as JSON line before switching to nonblocking
             try:
-                payload = json.dumps({
-                    "player": PANEL.player if PANEL else None,
-                    "capabilities": PANEL.capabilities if PANEL else [],
-                }) + "\n"
+                payload = json.dumps(panel_to_json(PANEL) if PANEL else {}) + "\n"
                 s.sendall(payload.encode("utf-8"))
             except Exception as e:
                 try:

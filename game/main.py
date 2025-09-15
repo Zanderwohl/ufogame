@@ -5,7 +5,7 @@ import socket
 import json
 from typing import Dict
 from common.runner import run
-from common.panel import Panel
+from common.panel import Panel, panel_from_json
 
 
 class Client:
@@ -60,12 +60,9 @@ def run_frame(logger: logging.Logger) -> bool:
             player_id: int | None = None
             try:
                 obj = json.loads(data.decode("utf-8")) if data else {}
-                player_id = int(obj.get("player")) if obj.get("player") is not None else None
-                caps = obj.get("capabilities") if isinstance(obj, dict) else None
-                if player_id is not None:
-                    panel_obj = Panel(player_id)
-                    if isinstance(caps, list):
-                        panel_obj.capabilities = caps
+                if isinstance(obj, dict) and obj.get("player") is not None:
+                    panel_obj = panel_from_json(obj)
+                    player_id = panel_obj.player
             except Exception:
                 panel_obj = None
                 player_id = None
