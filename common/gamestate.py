@@ -12,3 +12,7 @@ class GameState(Enum):
 @dataclass
 class GameStatePacket(Packet):
     packet: GameState
+
+
+class StartLevelPacket(Packet):
+    doodad_names: dict[str, str]

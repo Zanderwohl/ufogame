@@ -22,6 +22,8 @@ _clients: Dict[int, Client] = {}
 _last_sent: float = 0.0
 _rx_buffers: Dict[int, bytes] = {}
 
+_game_state: GameState = GameState.IDLE
+
 def main():
     return run(
         logger_name="server",
@@ -32,12 +34,14 @@ def main():
     )
 
 def run_frame(logger: logging.Logger) -> bool:
+    global _game_state
     try:
         ensure_server_ready(logger)
-        accept_new_clients(logger)
-        packets_by_player = receive_packets(logger)
+        new_client_ids = accept_new_clients(logger)
+        for client_id in new_client_ids:
+            send_packet_to_player(client_id, GameStatePacket(_game_state))
 
-        # Game loop work sees only high-level packets
+        packets_by_player = receive_packets(logger)
         for pid, packets in packets_by_player.items():
             for p in packets:
                 if isinstance(p, TextPacket):
@@ -63,10 +67,13 @@ def ensure_server_ready(logger: logging.Logger) -> None:
     logger.info(f"Server listening on 0.0.0.0:{PORT}")
 
 
-def accept_new_clients(logger: logging.Logger) -> None:
+def accept_new_clients(logger: logging.Logger) -> list[int]:
     global _clients, _rx_buffers
     if _server_sock is None:
-        return
+        return []
+
+    new_clients = []
+
     # Bounded accepts per frame to avoid long frames
     for _ in range(32):
         try:
@@ -115,11 +122,13 @@ def accept_new_clients(logger: logging.Logger) -> None:
             logger.info(f"Player {player_id} replaced existing connection")
 
         c.setblocking(False)
-        c.sendall(encode_packet(GameStatePacket(GameState.IDLE)))
+        c.sendall(encode_packet(GameStatePacket(GameState.RESET)))
         _clients[player_id] = Client(panel=panel_obj, sock=c)
+        new_clients.append(player_id)
         _rx_buffers[player_id] = b""
         logger.info(f"Player {player_id} connected from {addr}")
         logger.info(f"Player {player_id} capabilities: {panel_obj.capabilities}")
+    return new_clients
 
 
 def receive_packets(logger: logging.Logger) -> Dict[int, List[Packet]]:
@@ -175,3 +184,36 @@ def send_heartbeat_if_due() -> None:
             except Exception:
                 pass
             _clients.pop(pid, None)
+
+
+def send_packet_to_player(player_id: int, packet: Packet) -> bool:
+    client = _clients.get(player_id)
+    if client is None:
+        return False
+    try:
+        data = encode_packet(packet)
+        client.sock.sendall(data)
+        return True
+    except Exception:
+        try:
+            client.sock.close()
+        except Exception:
+            pass
+        _clients.pop(player_id, None)
+        return False
+
+
+def send_packet_to_all(packet: Packet) -> int:
+    data = encode_packet(packet)
+    delivered = 0
+    for pid, client in list(_clients.items()):
+        try:
+            client.sock.sendall(data)
+            delivered += 1
+        except Exception:
+            try:
+                client.sock.close()
+            except Exception:
+                pass
+            _clients.pop(pid, None)
+    return delivered
