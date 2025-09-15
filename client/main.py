@@ -8,6 +8,7 @@ from common.panel import Panel
 from common.packets import TextPacket
 from common.runner import run
 
+_state = GameState.IDLE
 
 def main(player: int | None):
     if player is None:
@@ -23,6 +24,7 @@ def main(player: int | None):
     )
 
 def run_frame(logger: logging.Logger) -> bool:
+    global _state
     if client.network.SOCKET is None:
         if not attempt_connection(logger):
             return True
@@ -32,10 +34,13 @@ def run_frame(logger: logging.Logger) -> bool:
         if isinstance(p, TextPacket):
             logger.info(f"recv: {p.text}")
         if isinstance(p, GameStatePacket):
+            _state = p.state
             countdown_info = f" {p.countdown}" if getattr(p, "countdown", 0) else ""
             logger.info(f"recv: {p.state}{countdown_info}")
-            if p.state == GameState.IDLE:
-                send_packet(ClientState(ready=True))
+            if p.state == GameState.RESET:
+                pass # RESET self
+            elif p.state == GameState.IDLE:
+                send_packet(ClientState(ready=True))  # TODO: Wait for user to turn key.
             elif p.state == GameState.LEVEL_COUNTDOWN:
                 # Potentially update UI with p.countdown
                 pass

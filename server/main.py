@@ -8,13 +8,7 @@ from common.gamestate import GameStatePacket, GameState, ClientState, StartLevel
 from common.runner import run
 from common.packets import TextPacket
 from server.network import Client, ensure_server_ready, accept_new_clients, receive_packets, send_packet_to_player, \
-    send_packet_to_all
-
-PORT = 8200
-_server_sock: socket.socket | None = None
-_clients: Dict[int, Client] = {}
-_last_sent: float = 0.0
-_rx_buffers: Dict[int, bytes] = {}
+    send_packet_to_all, PORT, all_clients_ready as net_all_clients_ready, set_client_ready, client_count
 
 COUNTDOWN_LENGTH = 3
 _game_state: GameState = GameState.IDLE
@@ -56,7 +50,7 @@ def run_frame(logger: logging.Logger) -> bool:
                 if isinstance(p, ClientState):
                     handle_client_state(logger, pid, p)
 
-        if _game_state == GameState.IDLE and all_clients_ready():
+        if _game_state == GameState.IDLE and net_all_clients_ready():
             logger.info("All clients ready.")
             _game_state = GameState.LEVEL_COUNTDOWN
             _countdown = (COUNTDOWN_LENGTH + 1, 100.0)  # Distant past to force immediate countdown
@@ -84,20 +78,10 @@ def run_frame(logger: logging.Logger) -> bool:
         return True
 
 
-def all_clients_ready():
-    global _clients
-
-    if len(_clients) == 0:
-        return False
-
-    ready = all([client.ready for client in _clients.values()])
-    return ready
-
-
 def handle_client_state(logger, pid, client_state):
     if client_state.ready:
         logger.info(f"Panel {pid} is ready")
-        _clients[pid].ready = True
+        set_client_ready(pid, True)
     else:
         logger.info(f"Panel {pid} is not ready")
-        _clients[pid].ready = False
+        set_client_ready(pid, False)

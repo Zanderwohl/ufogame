@@ -8,8 +8,6 @@ from common.gamestate import GameStatePacket, GameState
 from common.packets import encode_packet, Packet, decode_lines, TextPacket
 
 from common.panel import Panel, panel_from_json
-from server.main import PORT, _server_sock, _clients
-
 
 class Client:
     def __init__(self, panel: Panel, sock: socket.socket):
@@ -17,6 +15,11 @@ class Client:
         self.sock = sock
         self.ready = False
 
+PORT = 8200
+_server_sock: socket.socket | None = None
+_clients: Dict[int, Client] = {}
+_last_sent: float = 0.0
+_rx_buffers: Dict[int, bytes] = {}
 
 def ensure_server_ready(logger: logging.Logger) -> None:
     global _server_sock
@@ -199,3 +202,19 @@ def send_packet_to_all(packet: Packet) -> int:
                 pass
             _clients.pop(pid, None)
     return delivered
+
+
+def set_client_ready(player_id: int, ready: bool) -> None:
+    client = _clients.get(player_id)
+    if client is not None:
+        client.ready = ready
+
+
+def all_clients_ready() -> bool:
+    if len(_clients) == 0:
+        return False
+    return all(client.ready for client in _clients.values())
+
+
+def client_count() -> int:
+    return len(_clients)
