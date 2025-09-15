@@ -38,11 +38,11 @@ def _run_test_mode() -> int:
     procs = []
     try:
         # Start server
-        procs.append(subprocess.Popen([sys.executable, __file__, "-g"]))
+        procs.append(subprocess.Popen([sys.executable, __file__, "-s"]))
         time.sleep(0.3)
         # Start 4 panels: players 1..4
         for player in range(1, 5):
-            procs.append(subprocess.Popen([sys.executable, __file__, "-p", "--player", str(player)]))
+            procs.append(subprocess.Popen([sys.executable, __file__, "-c", "--player", str(player)]))
             time.sleep(0.2)
 
         print("Test mode running: server + 4 panels. Press Ctrl-C to stop all.")

@@ -2,19 +2,13 @@
 import time
 import logging
 import socket
-import json
-from typing import Dict, List
+from typing import Dict
 
-from common.gamestate import GameStatePacket, GameState, ClientState
+from common.gamestate import GameStatePacket, GameState, ClientState, StartLevelPacket
 from common.runner import run
-from common.panel import Panel, panel_from_json
-from common.packets import Packet, TextPacket, decode_lines, encode_packet
-
-
-class Client:
-    def __init__(self, panel: Panel, sock: socket.socket):
-        self.panel = panel
-        self.sock = sock
+from common.packets import TextPacket
+from server.network import Client, ensure_server_ready, accept_new_clients, receive_packets, send_packet_to_player, \
+    send_packet_to_all
 
 PORT = 8200
 _server_sock: socket.socket | None = None
@@ -22,7 +16,16 @@ _clients: Dict[int, Client] = {}
 _last_sent: float = 0.0
 _rx_buffers: Dict[int, bytes] = {}
 
+COUNTDOWN_LENGTH = 3
 _game_state: GameState = GameState.IDLE
+_level = 0
+_countdown: tuple[int, float] | None = None  # (value, last_sent_time)
+
+def reset():
+    global _game_state, _level, _countdown
+    _game_state = GameState.IDLE
+    _level = 0
+    _countdown = None
 
 def main():
     return run(
@@ -34,12 +37,16 @@ def main():
     )
 
 def run_frame(logger: logging.Logger) -> bool:
-    global _game_state
+    global _game_state, _countdown, _level
     try:
         ensure_server_ready(logger)
         new_client_ids = accept_new_clients(logger)
         for client_id in new_client_ids:
-            send_packet_to_player(client_id, GameStatePacket(state=_game_state))
+            # Send current state to newcomer, including countdown value if applicable
+            if _game_state == GameState.LEVEL_COUNTDOWN and _countdown is not None:
+                send_packet_to_player(client_id, GameStatePacket(state=_game_state, countdown=_countdown[0]))
+            else:
+                send_packet_to_player(client_id, GameStatePacket(state=_game_state))
 
         packets_by_player = receive_packets(logger)
         for pid, packets in packets_by_player.items():
@@ -47,195 +54,50 @@ def run_frame(logger: logging.Logger) -> bool:
                 if isinstance(p, TextPacket):
                     logger.info(f"recv from {pid}: {p.text}")
                 if isinstance(p, ClientState):
-                    if p.ready:
-                        logger.info(f"Panel {pid} is ready")
-                    else:
-                        logger.info(f"Panel {pid} is not ready")
-        # send_heartbeat_if_due()
+                    handle_client_state(logger, pid, p)
+
+        if _game_state == GameState.IDLE and all_clients_ready():
+            logger.info("All clients ready.")
+            _game_state = GameState.LEVEL_COUNTDOWN
+            _countdown = (COUNTDOWN_LENGTH + 1, 100.0)  # Distant past to force immediate countdown
+
+        # Drive countdown timing and transition to IN_LEVEL
+        if _game_state == GameState.LEVEL_COUNTDOWN and _countdown is not None:
+            value, last_time = _countdown
+            now = time.monotonic()
+            if now - last_time >= 1.0:
+                if value > 1:
+                    value -= 1
+                    _countdown = (value, now)
+                    send_packet_to_all(GameStatePacket(state=GameState.LEVEL_COUNTDOWN, countdown=value))
+                else:
+                    _game_state = GameState.IN_LEVEL
+                    _level += 1
+                    _countdown = None
+                    send_packet_to_all(GameStatePacket(state=GameState.IN_LEVEL))
+                    # Start the level; provide doodad names if available
+                    send_packet_to_all(StartLevelPacket(doodad_names={}, level=_level))
+
         return True
     except Exception as e:
         logger.debug(f"Server frame error: {e}")
         return True
 
 
-def ensure_server_ready(logger: logging.Logger) -> None:
-    global _server_sock
-    if _server_sock is not None:
-        return
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(("0.0.0.0", PORT))
-    s.listen(16)
-    s.setblocking(False)
-    _server_sock = s
-    logger.info(f"Server listening on 0.0.0.0:{PORT}")
+def all_clients_ready():
+    global _clients
 
-
-def accept_new_clients(logger: logging.Logger) -> list[int]:
-    global _clients, _rx_buffers
-    if _server_sock is None:
-        return []
-
-    new_clients = []
-
-    # Bounded accepts per frame to avoid long frames
-    for _ in range(32):
-        try:
-            c, addr = _server_sock.accept()
-        except BlockingIOError:
-            break
-
-        # Read one JSON line handshake with blocking timeout
-        c.settimeout(1.0)
-        data = b""
-        try:
-            while not data.endswith(b"\n") and len(data) < 65536:
-                chunk = c.recv(4096)
-                if not chunk:
-                    break
-                data += chunk
-        except Exception as e:
-            try:
-                c.close()
-            except Exception:
-                pass
-            logger.info(f"Handshake read failed from {addr}: {e}")
-            continue
-        finally:
-            # Return to blocking mode for initial write; we'll switch to nonblocking later
-            c.settimeout(None)
-
-        panel_obj: Panel | None = None
-        player_id: int | None = None
-        try:
-            obj = json.loads(data.decode("utf-8")) if data else {}
-            if isinstance(obj, dict) and obj.get("player") is not None:
-                panel_obj = panel_from_json(obj)
-                player_id = panel_obj.player
-        except Exception:
-            panel_obj = None
-            player_id = None
-
-        if not player_id or not (1 <= player_id <= 9) or panel_obj is None:
-            try:
-                c.close()
-            except Exception:
-                pass
-            preview = data[:200].decode("utf-8", errors="replace") if data else ""
-            logger.info(f"Rejected connection {addr}: invalid handshake; data preview='{preview}'")
-            continue
-
-        # Replace any existing client for this player
-        old = _clients.pop(player_id, None)
-        if old is not None:
-            try:
-                old.sock.close()
-            except Exception:
-                pass
-            logger.info(f"Player {player_id} replaced existing connection")
-
-        # Send initial RESET in blocking mode to avoid EAGAIN on nonblocking send
-        try:
-            c.sendall(encode_packet(GameStatePacket(state=GameState.RESET)))
-        except Exception as e:
-            try:
-                c.close()
-            except Exception:
-                pass
-            logger.info(f"Failed to send initial RESET to player {player_id}; dropping: {e}")
-            continue
-        c.setblocking(False)
-        _clients[player_id] = Client(panel=panel_obj, sock=c)
-        new_clients.append(player_id)
-        _rx_buffers[player_id] = b""
-        logger.info(f"Player {player_id} connected from {addr}")
-        logger.info(f"Player {player_id} capabilities: {panel_obj.capabilities}")
-    return new_clients
-
-
-def receive_packets(logger: logging.Logger) -> Dict[int, List[Packet]]:
-    global _clients, _rx_buffers
-    packets_by_player: Dict[int, List[Packet]] = {}
-    gone: list[int] = []
-    for pid, client in _clients.items():
-        c = client.sock
-        try:
-            data = c.recv(4096)
-            if data == b"":
-                try:
-                    c.close()
-                except Exception:
-                    pass
-                logger.info(f"Player {pid} disconnected")
-                gone.append(pid)
-                continue
-            elif data:
-                buf = _rx_buffers.get(pid, b"") + data
-                decoded, remainder = decode_lines(buf)
-                _rx_buffers[pid] = remainder
-                if decoded:
-                    packets_by_player[pid] = decoded
-        except BlockingIOError:
-            pass
-        except Exception as e:
-            try:
-                c.close()
-            except Exception:
-                pass
-            logger.debug(f"Player {pid} error; dropping: {e}")
-            gone.append(pid)
-    for pid in gone:
-        _clients.pop(pid, None)
-        _rx_buffers.pop(pid, None)
-    return packets_by_player
-
-
-def send_heartbeat_if_due() -> None:
-    global _last_sent
-    now = time.monotonic()
-    if now - _last_sent < 1.0:
-        return
-    _last_sent = now
-    msg = encode_packet(TextPacket(text="Hello from server"))
-    for pid, client in list(_clients.items()):
-        try:
-            client.sock.sendall(msg)
-        except Exception:
-            try:
-                client.sock.close()
-            except Exception:
-                pass
-            _clients.pop(pid, None)
-
-
-def send_packet_to_player(player_id: int, packet: Packet) -> bool:
-    client = _clients.get(player_id)
-    if client is None:
-        return False
-    try:
-        data = encode_packet(packet)
-        client.sock.sendall(data)
-        return True
-    except Exception:
-        try:
-            client.sock.close()
-        except Exception:
-            pass
-        _clients.pop(player_id, None)
+    if len(_clients) == 0:
         return False
 
+    ready = all([client.ready for client in _clients.values()])
+    return ready
 
-def send_packet_to_all(packet: Packet) -> int:
-    data = encode_packet(packet)
-    delivered = 0
-    for pid, client in list(_clients.items()):
-        try:
-            client.sock.sendall(data)
-            delivered += 1
-        except Exception:
-            try:
-                client.sock.close()
-            except Exception:
-                pass
-            _clients.pop(pid, None)
-    return delivered
+
+def handle_client_state(logger, pid, client_state):
+    if client_state.ready:
+        logger.info(f"Panel {pid} is ready")
+        _clients[pid].ready = True
+    else:
+        logger.info(f"Panel {pid} is not ready")
+        _clients[pid].ready = False
