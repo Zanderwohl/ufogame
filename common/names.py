@@ -16,7 +16,8 @@ ADJECTIVES = [
     "Ferrite",
     "Golden",
     "Particle",
-    "Deflection"
+    "Deflection",
+    "Virtual"
 ]
 
 NOUNS = [
@@ -33,7 +34,8 @@ NOUNS = [
     "Detector",
     "Coil",
     "Dynamo",
-    "Generator"
+    "Generator",
+    "Virtualizer"
 ]
 
 def generate_names(n: int) -> List[str]:
