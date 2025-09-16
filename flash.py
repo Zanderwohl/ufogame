@@ -55,9 +55,10 @@ def gather_doodad_files(project_dir: Path) -> list[tuple[Path, Path]]:
 
 
 def upload_doodad_to_pico(files: list[tuple[Path, Path]], mpremote_cmd: str, device: str | None) -> None:
-    """Upload doodad/ files to Pico preserving paths under :doodad/ using mpremote.
+    """Upload doodad/ files to Pico with doodad/ as the device root.
 
-    files: list of (source_path, relative_path_under_doodad)
+    The relative path under doodad/ becomes the absolute path on the device.
+    Example: doodad/foo/bar.py -> :/foo/bar.py
     """
     if not files:
         print("No doodad files to upload.")
@@ -73,14 +74,12 @@ def upload_doodad_to_pico(files: list[tuple[Path, Path]], mpremote_cmd: str, dev
     except Exception:
         pass
 
-    # Ensure directories exist on device (create :doodad and subdirs)
-    dirs = {Path("doodad")}
+    # Ensure directories exist on device (create needed subdirs at device root)
+    dirs: set[Path] = set()
     for _, rel in files:
-        parent = Path("doodad") / rel.parent
-        while True:
+        parent = rel.parent
+        while parent and parent != Path("."):
             dirs.add(parent)
-            if parent == Path("doodad"):
-                break
             parent = parent.parent
     # Sort dirs by depth to create parents first
     for d in sorted(dirs, key=lambda p: len(p.parts)):
@@ -91,7 +90,7 @@ def upload_doodad_to_pico(files: list[tuple[Path, Path]], mpremote_cmd: str, dev
 
     # Copy files
     for src, rel in files:
-        dest_path = (Path(":") / "doodad" / rel).as_posix()
+        dest_path = (Path(":") / rel).as_posix()
         cmd = base_cmd + ["cp", str(src), dest_path]
         print(f"Uploading {src} -> {dest_path} ...")
         try:
@@ -122,8 +121,10 @@ def run_doodad_main(mpremote_cmd: str, device: str | None) -> None:
     except Exception:
         pass
 
-    code = "import doodad.main as _m; _m.main()"
-    print("Running doodad/main.py on device... Press Ctrl-C to stop")
+    # Since doodad/ is copied to device root, the entrypoint is /main.py.
+    # Call main() only if it exists to avoid AttributeError.
+    code = "import main as _m; m=getattr(_m,'main',None); m() if m else None"
+    print("Running main.py on device... Press Ctrl-C to stop")
     proc = subprocess.Popen(base_cmd + ["exec", code])
     try:
         proc.wait()

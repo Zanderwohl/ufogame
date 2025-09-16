@@ -1,10 +1,16 @@
+import tomli
 from machine import Pin
-import time
 
 led = Pin(25, Pin.OUT)
+led.off()
 
-while True:
-    led.on()
-    time.sleep(1) # Wait for 1 second
-    led.off()
-    time.sleep(1) # Wait for 1 second
+toml_dict = {}
+try:
+    with open("config.toml", "rb") as f:
+        toml_dict = tomli.load(f)
+except tomli.TOMLDecodeError:
+    print("Could not load config.toml")
+    exit(1)
+
+id = toml_dict["id"]
+print(f"My ID is {id:x}!")

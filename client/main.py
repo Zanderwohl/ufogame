@@ -2,6 +2,7 @@ import logging
 
 import client.network
 from client.network import attempt_connection, receive_packets, send_packet
+from client import usb as usb_io
 
 from common.gamestate import GameStatePacket, GameState, ClientState, StartLevelPacket
 from common.panel import Panel
@@ -52,4 +53,12 @@ def run_frame(logger: logging.Logger) -> bool:
                 pass
         if isinstance(p, StartLevelPacket):
             logger.info(f"Starting level {p.level}, doodads: {p.doodad_names}")
+    
+    # USB device handling: attempt connections and drain packets
+    usb_io.attempt_connections(logger)
+    usb_packets = usb_io.receive_packets(logger)
+    for dev, dev_packets in usb_packets.items():
+        for p in dev_packets:
+            logger.info(f"usb {dev}: {p}")
+    
     return True
