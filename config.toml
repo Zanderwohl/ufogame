@@ -1,0 +1,2 @@
+role="server" # server, client, or test
+player=4
